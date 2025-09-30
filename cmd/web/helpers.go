@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/go-playground/form/v4"
 )
 
 func (app *application) serverError(w http.ResponseWriter, r *http.Request, err error) {
@@ -27,8 +30,11 @@ func (app *application) clientError(w http.ResponseWriter, status int) {
 func (app *application) newTemplateData(r *http.Request) templateData {
 	return templateData{
 		CurrentYear: time.Now().Year(),
+		// Add the flash message to the template data, if one exists.
+		Flash: app.sessionManager.PopString(r.Context(), "flash"),
 	}
 }
+
 func (app *application) render(w http.ResponseWriter, r *http.Request, status int, page string, data templateData) {
 	// Retrieve the appropriate template set from the cache based on the page
 	// name (like 'home.tmpl'). If no entry exists in the cache with the
@@ -61,4 +67,34 @@ func (app *application) render(w http.ResponseWriter, r *http.Request, status in
 	// is another time where we pass our http.ResponseWriter to a function that
 	// takes an io.Writer.
 	buf.WriteTo(w)
+}
+
+// Create a new decodePostForm() helper method. The second parameter here, dst,
+// is the target destination into which we want to decode the form data.
+func (app *application) decodePostForm(r *http.Request, dst any) error {
+	// Call ParseForm() on the request, in the same way that we did in our
+	// snippetCreatePost handler.
+	err := r.ParseForm()
+	if err != nil {
+		return err
+	}
+
+	// Call Decode() on our decoder instance, passing the target destination as
+	// the first parameter.
+	err = app.formDecoder.Decode(dst, r.PostForm)
+	if err != nil {
+		// If we try to use an invalid target destination, the Decode() method
+		// will return an error with the type form.InvalidDecoderError. We use
+		// errors.As() to check for this and panic.
+		var invalidDecoderError *form.InvalidDecoderError
+
+		if errors.As(err, &invalidDecoderError) {
+			panic(err)
+		}
+
+		// For all other errors, return them as normal.
+		return err
+	}
+
+	return nil
 }

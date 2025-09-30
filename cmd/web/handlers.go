@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/jeremycardona/snippetbox/internal/models"
+	"github.com/jeremycardona/snippetbox/internal/validator"
 )
 
 // Define a snippetCreateForm struct to represent the form data and validation
@@ -17,10 +16,10 @@ import (
 // must be exported in order to be read by the html/template package when
 // rendering the template.
 type snippetCreateForm struct {
-	Title       string
-	Content     string
-	Expires     int
-	FieldErrors map[string]string
+	Title               string     `form:"title"`
+	Content             string     `form:"content"`
+	Expires             int        `form:"expires"`
+	validator.Validator `form:"-"` // This tag tells the form decoder to ignore this field.
 }
 
 func (app *application) home(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +56,7 @@ func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
 	// And do the same thing again here...
 	data := app.newTemplateData(r)
 	data.Snippet = snippet
@@ -80,53 +80,32 @@ func (app *application) snippetCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *application) snippetCreatePost(w http.ResponseWriter, r *http.Request) {
-	// First we call r.ParseForm() which adds any data in POST request bodies
-	// to the r.PostForm map. This also works in the same way for PUT and PATCH
-	// requests. If there are any errors, we use our app.ClientError() helper to
-	// send a 400 Bad Request response to the user.
-	err := r.ParseForm()
+
+	// Declare a new empty instance of the snippetCreateForm struct.
+	var form snippetCreateForm
+
+	err := app.decodePostForm(r, &form)
 	if err != nil {
 		app.clientError(w, http.StatusBadRequest)
 		return
 	}
 
-	// Get the expires value from the form as normal.
-	expires, err := strconv.Atoi(r.PostForm.Get("expires"))
-	if err != nil {
-		app.clientError(w, http.StatusBadRequest)
-		return
-	}
+	// Because the Validator struct is embedded by the snippetCreateForm struct,
+	// we can call CheckField() directly on it to execute our validation checks.
+	// CheckField() will add the provided key and error message to the
+	// FieldErrors map if the check does not evaluate to true. For example, in
+	// the first line here we "check that the form.Title field is not blank". In
+	// the second, we "check that the form.Title field has a maximum character
+	// length of 100" and so on.
+	form.CheckField(validator.NotBlank(form.Title), "title", "This field cannot be blank")
+	form.CheckField(validator.MaxChars(form.Title, 100), "title", "This field cannot be more than 100 characters long")
+	form.CheckField(validator.NotBlank(form.Content), "content", "This field cannot be blank")
+	form.CheckField(validator.PermittedValue(form.Expires, 1, 7, 365), "expires", "This field must equal 1, 7 or 365")
 
-	// Create an instance of the snippetCreateForm struct containing the values
-	// from the form and an empty map for any validation errors.
-	form := snippetCreateForm{
-		Title:       r.PostForm.Get("title"),
-		Content:     r.PostForm.Get("content"),
-		Expires:     expires,
-		FieldErrors: map[string]string{},
-	}
-
-	// Update the validation checks so that they operate on the snippetCreateForm
-	// instance.
-	if strings.TrimSpace(form.Title) == "" {
-		form.FieldErrors["title"] = "This field cannot be blank"
-	} else if utf8.RuneCountInString(form.Title) > 100 {
-		form.FieldErrors["title"] = "This field cannot be more than 100 characters long"
-	}
-
-	if strings.TrimSpace(form.Content) == "" {
-		form.FieldErrors["content"] = "This field cannot be blank"
-	}
-
-	if form.Expires != 1 && form.Expires != 7 && form.Expires != 365 {
-		form.FieldErrors["expires"] = "This field must equal 1, 7 or 365"
-	}
-
-	// If there are any validation errors, then  the create.tmpl template,
-	// passing in the snippetCreateForm instance as dynamic data in the Form
-	// field. Note that we use the HTTP status code 422 Unprocessable Entity
-	// when sending the response to indicate that there was a validation error.
-	if len(form.FieldErrors) > 0 {
+	// Use the Valid() method to see if any of the checks failed. If they did,
+	// then re-render the template passing in the form in the same way as
+	// before.
+	if !form.Valid() {
 		data := app.newTemplateData(r)
 		data.Form = form
 		app.render(w, r, http.StatusUnprocessableEntity, "create.tmpl", data)
@@ -140,6 +119,9 @@ func (app *application) snippetCreatePost(w http.ResponseWriter, r *http.Request
 		app.serverError(w, r, err)
 		return
 	}
+	// Use the Put() method to add a string value ("Snippet successfully
+	// created!") and the corresponding key ("flash") to the session data.
+	app.sessionManager.Put(r.Context(), "flash", "Snippet successfully created!")
 
 	http.Redirect(w, r, fmt.Sprintf("/snippet/view/%d", id), http.StatusSeeOther)
 }
